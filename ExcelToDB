@@ -1,0 +1,176 @@
+import xlrd
+
+import mysql.connector
+import os
+import logging
+import datetime
+import shutil
+import psutil
+import sys
+import re
+
+
+class ExcelToDB:
+    row=None
+    def __init__(self):
+        self._row=[]
+
+    def filesExist(self,path):
+        self.filelist=os.listdir(path)
+        return (self.filelist)
+
+    def has_handle(self,fpath):
+        for proc in psutil.process_iter():
+            try:
+                for item in proc.open_files():
+                    if fpath == item.path:
+                        return True
+            except Exception:
+                pass
+
+        return False
+
+    def iterate_fds(pid):
+        dir = '/proc/' + str(pid) + '/fd'
+        if not os.access(dir, os.R_OK | os.X_OK): return
+
+        for fds in os.listdir(dir):
+            for fd in fds:
+                full_name = os.path.join(dir, fd)
+                try:
+                    file = os.readlink(full_name)
+                    if file == '/dev/null' or \
+                            re.match(r'pipe:\[\d+\]', file) or \
+                            re.match(r'socket:\[\d+\]', file):
+                        file = None
+                except OSError as err:
+                    if err.errno == 2:
+                        file = None
+                    else:
+                        raise (err)
+
+                yield (fd, file)
+
+    def copyRows(self,excelfile):
+
+        #check if file is already open
+        print(excelfile)
+        if(self.has_handle(excelfile)==True):
+
+            print("The file is Opened. Close the file and execute again")
+            sys.exit(1)
+        exceptions=[]
+        try:
+            ws = xlrd.open_workbook(excelfile)
+        except Exception as e:
+            exceptions.append((excelfile,e))
+            print(exceptions)
+            sys.exit()
+        sheet=ws.sheet_by_index(0)
+        
+        print(sheet.nrows)
+        print(sheet.ncols)
+        for i in range(sheet.nrows):
+            col=[]
+            for j in range(sheet.ncols):
+                col.append(sheet.cell_value(i,j))
+            self._row.append(col)
+        print(self._row)
+
+    def inserttoDB(self,table):
+        self.rows=self._row
+        driver=mysql.connector.connect(user="root",password="backup@1",database="ShoppingCart")
+        cursor=driver.cursor()
+        count=0
+        for i in range(len(self.rows)):
+            rdata={
+                'uname':self.rows[i][0],
+                'act':self.rows[i][1],
+                'paswd':self.rows[i][2],
+                'urole':self.rows[i][3],
+            }
+
+            sql_query="insert into Accounts2(User_Name ,Active,Password,User_Role) values(%(uname)s,%(act)s,%(paswd)s,%(urole)s);"
+            # sql_query.format(self.rows[0][0],self.rows[0][1],self.rows[0][2],self.rows[0][3])
+            print(sql_query.format(rdata))
+            success=cursor.execute(sql_query,rdata)
+            if(cursor.rowcount):
+                count+=1;
+        if(count==len(self.rows)):
+            driver.commit()
+            return None
+        else:
+            return "failed"
+
+class Controller:
+
+    def __init__(self,excelFolder,errorFilePath,table):
+        self.errorFilePath=errorFilePath
+        self.excelfolder=excelFolder
+        self.table=table
+
+    def gatherFilesinFolder(self):
+        self.obj = ExcelToDB()
+
+        # path to excel files folder
+        # self.excelfolder = "/home/naseer/PycharmProjects/check"
+        self.filelist = self.obj.filesExist(self.excelfolder)
+        logging.basicConfig(filename="execution.log", level=logging.DEBUG)
+        if (len(self.filelist)== 0):
+            logging.debug("No files exist at this moment "+str(datetime.datetime.now()))
+            print(" No excel files exist at the moment",file=sys.stderr)
+            sys.exit()
+
+    def  processErrorFile(self,file):
+        shutil.move(self.excelfolder+file,self.errorFilePath+file)
+
+    def eachFileProcess(self):
+        match=None
+        #Check if any files are already open and warn to close.
+        for file in self.filelist:
+            match=re.match("^.~lock",file)
+            if(match):
+                print("The file %s is open.Kindly close this file and all other files "%file, file=sys.stderr)
+                sys.exit()
+
+        for file in self.filelist:
+            self.obj.copyRows(self.excelfolder+"/"+file)
+            self.status=self.obj.inserttoDB(self.table)
+            if(self.status=="failed"):
+                self.processErrorFile(file)
+                logging.debug(" Error file encountered ")
+            else:
+                os.remove(self.excelfolder+"/"+file)
+
+
+if __name__=="__main__":
+    excelPath="/home/naseer/PycharmProjects/check"
+    deleteFilePath="/home/naseer/PycharmProjects/Errorfiles"
+    table="Accounts2"
+    controllerObj=Controller(excelPath,deleteFilePath,table)
+    controllerObj.gatherFilesinFolder()
+    controllerObj.eachFileProcess()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
